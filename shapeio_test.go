@@ -2,15 +2,17 @@ package shapeio_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/cryks/shapeio"
 	"github.com/dustin/go-humanize"
-	"github.com/fujiwara/shapeio"
 )
 
 var rates = []float64{
@@ -56,7 +58,7 @@ func TestRead(t *testing.T) {
 			n, err := io.Copy(ioutil.Discard, sio)
 			elapsed := time.Since(start)
 			if err != nil {
-				t.Errorf("io.Copy failed", err)
+				t.Error("io.Copy failed", err)
 			}
 			realRate := float64(n) / elapsed.Seconds()
 			if realRate > limit {
@@ -84,7 +86,7 @@ func TestWrite(t *testing.T) {
 			n, err := io.Copy(sio, src)
 			elapsed := time.Since(start)
 			if err != nil {
-				t.Errorf("io.Copy failed", err)
+				t.Error("io.Copy failed", err)
 			}
 			realRate := float64(n) / elapsed.Seconds()
 			if realRate > limit {
@@ -100,4 +102,52 @@ func TestWrite(t *testing.T) {
 			)
 		}
 	}
+}
+
+// https://github.com/fujiwara/shapeio/issues/2
+func TestConcurrentSetRateLimit(t *testing.T) {
+	// run with go test -race
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+
+	sio := shapeio.NewWriter(ioutil.Discard)
+
+	for _, l := range rates {
+		limit := l
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.NewTicker(50 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					sio.SetRateLimit(limit)
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTicker(50 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				for _, src := range srcs {
+					io.Copy(sio, src)
+				}
+			}
+		}
+	}()
+
+	time.AfterFunc(time.Second, cancel)
+
+	wg.Wait()
 }

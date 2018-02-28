@@ -3,6 +3,7 @@ package shapeio
 import (
 	"context"
 	"io"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -14,12 +15,14 @@ type Reader struct {
 	r       io.Reader
 	limiter *rate.Limiter
 	ctx     context.Context
+	mu      sync.Mutex
 }
 
 type Writer struct {
 	w       io.Writer
 	limiter *rate.Limiter
 	ctx     context.Context
+	mu      sync.Mutex
 }
 
 // NewReader returns a reader that implements io.Reader with rate limiting.
@@ -56,8 +59,15 @@ func NewWriterWithContext(w io.Writer, ctx context.Context) *Writer {
 
 // SetRateLimit sets rate limit (bytes/sec) to the reader.
 func (s *Reader) SetRateLimit(bytesPerSec float64) {
-	s.limiter = rate.NewLimiter(rate.Limit(bytesPerSec), burstLimit)
-	s.limiter.AllowN(time.Now(), burstLimit) // spend initial burst
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.limiter == nil {
+		s.limiter = rate.NewLimiter(rate.Limit(bytesPerSec), burstLimit)
+		s.limiter.AllowN(time.Now(), burstLimit) // spend initial burst
+	} else {
+		s.limiter.SetLimit(rate.Limit(bytesPerSec))
+	}
 }
 
 // Read reads bytes into p.
@@ -77,8 +87,15 @@ func (s *Reader) Read(p []byte) (int, error) {
 
 // SetRateLimit sets rate limit (bytes/sec) to the writer.
 func (s *Writer) SetRateLimit(bytesPerSec float64) {
-	s.limiter = rate.NewLimiter(rate.Limit(bytesPerSec), burstLimit)
-	s.limiter.AllowN(time.Now(), burstLimit) // spend initial burst
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.limiter == nil {
+		s.limiter = rate.NewLimiter(rate.Limit(bytesPerSec), burstLimit)
+		s.limiter.AllowN(time.Now(), burstLimit) // spend initial burst
+	} else {
+		s.limiter.SetLimit(rate.Limit(bytesPerSec))
+	}
 }
 
 // Write writes bytes from p.
